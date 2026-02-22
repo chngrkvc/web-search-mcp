@@ -8,7 +8,10 @@
       "Bash(gh auth setup-git:*)",
       "Bash(railway:*)",
       "Bash(curl:*)",
-      "Bash(python3 -c:*)"
+      "Bash(python3 -c:*)",
+      "Bash(pnpm run build)",
+      "Bash(npx tsc --noEmit)",
+      "Bash(npx -p typescript tsc:*)"
     ]
   }
 }

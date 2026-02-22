@@ -1,29 +1,33 @@
-import { callMdTool } from './crawl4ai.js';
-
 export type SearchResult = {
   url: string;
   title: string;
   description: string;
 };
 
-// DuckDuckGo Instant Answer API - no bot detection
+type DuckDuckGoResponse = {
+  RelatedTopics?: Array<{ Text: string; FirstURL: string }>;
+  Results?: Array<{ Text: string; FirstURL: string }>;
+};
+
+// DuckDuckGo Instant Answer API - no bot detection, direct HTTP
 async function searchDuckDuckGoAPI(
   query: string,
   limit: number,
 ): Promise<SearchResult[]> {
   const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
 
-  const result = await callMdTool({ url });
+  const response = await fetch(url, {
+    headers: {
+      'Accept': 'application/json',
+      'User-Agent': 'Mozilla/5.0 (compatible; WebSearchBot/1.0)',
+    },
+  });
 
-  const content = result as { content?: { text: string }[] };
-  const text = content?.content?.[0]?.text;
-
-  if (!text) {
-    throw new Error('No response from DuckDuckGo API');
+  if (!response.ok) {
+    throw new Error(`DuckDuckGo API failed: ${response.status}`);
   }
 
-  // Parse the JSON response
-  const data = JSON.parse(text);
+  const data = (await response.json()) as DuckDuckGoResponse;
 
   if (!data.RelatedTopics || data.RelatedTopics.length === 0) {
     throw new Error('No results from DuckDuckGo');
@@ -35,9 +39,12 @@ async function searchDuckDuckGoAPI(
     if (results.length >= limit) break;
 
     if (topic.Text && topic.FirstURL) {
+      // Clean up the title - remove source in parentheses
+      const title = topic.Text.replace(/\s*\([^)]*\)$/, '').trim();
+
       results.push({
         url: topic.FirstURL,
-        title: topic.Text.split(' - ')[0] || topic.Text,
+        title: title || topic.Text,
         description: '',
       });
     }
@@ -49,9 +56,11 @@ async function searchDuckDuckGoAPI(
       if (results.length >= limit) break;
 
       if (topic.Text && topic.FirstURL) {
+        const title = topic.Text.replace(/\s*\([^)]*\)$/, '').trim();
+
         results.push({
           url: topic.FirstURL,
-          title: topic.Text.split(' - ')[0] || topic.Text,
+          title: title || topic.Text,
           description: '',
         });
       }
@@ -61,97 +70,35 @@ async function searchDuckDuckGoAPI(
   return results;
 }
 
-// Fallback: scrape Bing or use textise dot iitty
-async function searchBingScrape(
+// Fallback: use Brave Search API
+async function searchBraveAPI(
   query: string,
   limit: number,
 ): Promise<SearchResult[]> {
-  const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
+  const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${limit}`;
 
-  const result = await callMdTool({ url });
+  const response = await fetch(url, {
+    headers: {
+      'Accept': 'application/json',
+      'X-Subscription-Token': '', // Brave API needs a token, but this might work for basic
+    },
+  });
 
-  const content = result as { content?: { text: string }[] };
-  const text = content?.content?.[0]?.text;
-
-  if (!text) {
-    throw new Error('No response from Bing');
+  if (!response.ok) {
+    throw new Error(`Brave API failed: ${response.status}`);
   }
 
-  // Extract URLs from markdown-style links
-  const urlRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
-  const results: SearchResult[] = [];
-  let match;
+  const data = await response.json() as { web?: { results?: Array<{ url: string; title: string; description: string }> } };
 
-  while ((match = urlRegex.exec(text)) !== null && results.length < limit) {
-    const title = match[1];
-    const url = match[2];
-
-    if (url && !url.includes('bing') && !url.includes('microsoft.com')) {
-      results.push({
-        url,
-        title,
-        description: '',
-      });
-    }
+  if (!data.web?.results) {
+    throw new Error('No results from Brave');
   }
 
-  if (results.length === 0) {
-    throw new Error('No results parsed from Bing');
-  }
-
-  return results;
-}
-
-// Use textise dot iitty - a simple text-based search
-async function searchTextise(
-  query: string,
-  limit: number,
-): Promise<SearchResult[]> {
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-
-  const result = await callMdTool({ url });
-
-  const content = result as { content?: { text: string }[] };
-  const text = content?.content?.[0]?.text;
-
-  if (!text) {
-    throw new Error('No response from DuckDuckGo');
-  }
-
-  // Try to parse as markdown links
-  const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
-  const results: SearchResult[] = [];
-  let match;
-
-  while ((match = linkRegex.exec(text)) !== null && results.length < limit) {
-    const title = match[1];
-    let url = match[2];
-
-    // Skip relative URLs and DuckDuckGo internal links
-    if (!url || url.startsWith('/') || url.includes('uddg=')) {
-      continue;
-    }
-
-    // Decode DuckDuckGo redirect URLs
-    const uddgMatch = url.match(/uddg=([^&]+)/);
-    if (uddgMatch) {
-      url = decodeURIComponent(uddgMatch[1]);
-    }
-
-    if (url && title) {
-      results.push({
-        url,
-        title,
-        description: '',
-      });
-    }
-  }
-
-  if (results.length === 0) {
-    throw new Error('No results parsed from textise');
-  }
-
-  return results;
+  return data.web.results.slice(0, limit).map(r => ({
+    url: r.url,
+    title: r.title,
+    description: r.description || '',
+  }));
 }
 
 export async function browserSearch(
@@ -173,22 +120,9 @@ export async function browserSearch(
     );
   }
 
-  // Try textise version
+  // Try Brave
   try {
-    const results = await searchTextise(query, maxResults);
-    if (results.length > 0) {
-      process.stderr.write(`DuckDuckGo textise: got ${results.length} results\n`);
-      return { data: results };
-    }
-  } catch (error) {
-    process.stderr.write(
-      `DuckDuckGo textise failed: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
-  }
-
-  // Try Bing scrape
-  try {
-    const results = await searchBingScrape(query, maxResults);
+    const results = await searchBraveAPI(query, maxResults);
     return { data: results };
   } catch (error) {
     throw new Error(
