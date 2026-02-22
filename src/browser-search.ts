@@ -17,8 +17,8 @@ async function searchDuckDuckGo(
   const encodedQuery = encodeURIComponent(query);
   const url = `https://html.duckduckgo.com/html/?q=${encodedQuery}`;
 
+  // Use a simpler script that just extracts the results as a string
   const script = `
-    // Wait for results to load
     await new Promise(r => setTimeout(r, 2000));
 
     const results = [];
@@ -31,23 +31,23 @@ async function searchDuckDuckGo(
       const snippetEl = el.querySelector('.result__snippet');
 
       if (titleEl) {
-        let url = titleEl.getAttribute('href') || '';
+        let href = titleEl.getAttribute('href') || '';
 
-        // DuckDuckGo URLs are redirects, extract the actual URL
-        const uddgMatch = url.match(/uddg=([^&]+)/);
+        // Extract actual URL from DuckDuckGo redirect
+        const uddgMatch = href.match(/uddg=([^&]+)/);
         if (uddgMatch) {
-          url = decodeURIComponent(uddgMatch[1]);
+          href = decodeURIComponent(uddgMatch[1]);
         }
 
         results.push({
-          url: url,
+          url: href,
           title: titleEl.textContent?.trim() || '',
           description: snippetEl?.textContent?.trim() || ''
         });
       }
     });
 
-    return JSON.stringify(results);
+    return results;
   `;
 
   try {
@@ -56,7 +56,7 @@ async function searchDuckDuckGo(
       scripts: [script],
     });
 
-    // Parse the result
+    // Parse the result - Crawl4AI returns the full crawl with js_execution_result
     const content = result as { content: { type: string; text: string }[] };
     const text = content.content?.[0]?.text;
 
@@ -64,22 +64,37 @@ async function searchDuckDuckGo(
       throw new Error('No response from DuckDuckGo');
     }
 
-    // The execute_js returns the crawl result, we need to extract the JS result
-    // Try to parse as JSON first, then look for the result in the response
+    // The result is a JSON string inside the text field
+    // It contains: {"url": "...", "html": "...", "js_execution_result": "..."}
     try {
       const parsed = JSON.parse(text);
+
+      // Check for js_execution_result first
+      if (parsed.js_execution_result) {
+        const jsResult = JSON.parse(parsed.js_execution_result);
+        if (Array.isArray(jsResult) && jsResult.length > 0) {
+          return jsResult;
+        }
+      }
+
+      // Try to find JSON array in the text
+      const jsonMatch = text.match(/\[\s*\{[\s\S]*"url"[\s\S]*\}\s*\]/);
+      if (jsonMatch) {
+        const extracted = JSON.parse(jsonMatch[0]);
+        if (Array.isArray(extracted) && extracted.length > 0) {
+          return extracted;
+        }
+      }
+
+      // If the parsed itself is an array
       if (Array.isArray(parsed)) {
         return parsed;
       }
-    } catch {
-      // If not direct JSON, try to extract from markdown
-      const jsonMatch = text.match(/\[\s*\{[\s\S]*\}\s*\]/);
-      if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]);
-      }
-    }
 
-    throw new Error('Could not parse DuckDuckGo results');
+      throw new Error('Could not extract results from response');
+    } catch (parseError) {
+      throw new Error(`Parse error: ${parseError instanceof Error ? parseError.message : String(parseError)}. Response: ${text.substring(0, 500)}`);
+    }
   } catch (error) {
     throw new Error(
       `DuckDuckGo search failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -95,21 +110,20 @@ async function searchBrave(query: string, limit: number): Promise<SearchResult[]
   const url = `https://search.brave.com/search?q=${encodedQuery}`;
 
   const script = `
-    // Wait for results to load
     await new Promise(r => setTimeout(r, 3000));
 
     const results = [];
-    const resultElements = document.querySelectorAll('[data-testid="web-result"]');
+    const resultElements = document.querySelectorAll('[data-testid="web-result"], .result, .snippet);
 
     resultElements.forEach((el, index) => {
       if (index >= ${limit}) return;
 
-      const headingEl = el.querySelector('heading a, h3 a, a[href]');
-      const snippetEl = el.querySelector('[data-testid="snippet-text"], .snippet');
-      const citeEl = el.querySelector('cite');
+      const titleEl = el.querySelector('h3, .title, a[href]');
+      const snippetEl = el.querySelector('[data-testid="snippet-text"], .snippet, .description');
+      const linkEl = el.querySelector('a[href]');
 
-      if (headingEl) {
-        let resultUrl = headingEl.getAttribute('href') || citeEl?.textContent || '';
+      if (titleEl || linkEl) {
+        let resultUrl = linkEl?.getAttribute('href') || '';
 
         // Clean up relative URLs
         if (resultUrl && !resultUrl.startsWith('http')) {
@@ -118,13 +132,13 @@ async function searchBrave(query: string, limit: number): Promise<SearchResult[]
 
         results.push({
           url: resultUrl,
-          title: headingEl.textContent?.trim() || '',
+          title: titleEl?.textContent?.trim() || linkEl?.textContent?.trim() || '',
           description: snippetEl?.textContent?.trim() || ''
         });
       }
     });
 
-    return JSON.stringify(results);
+    return results;
   `;
 
   try {
@@ -142,17 +156,27 @@ async function searchBrave(query: string, limit: number): Promise<SearchResult[]
 
     try {
       const parsed = JSON.parse(text);
+
+      if (parsed.js_execution_result) {
+        const jsResult = JSON.parse(parsed.js_execution_result);
+        if (Array.isArray(jsResult) && jsResult.length > 0) {
+          return jsResult;
+        }
+      }
+
       if (Array.isArray(parsed)) {
         return parsed;
       }
-    } catch {
-      const jsonMatch = text.match(/\[\s*\{[\s\S]*\}\s*\]/);
+
+      const jsonMatch = text.match(/\[\s*\{[\s\S]*"url"[\s\S]*\}\s*\]/);
       if (jsonMatch) {
         return JSON.parse(jsonMatch[0]);
       }
-    }
 
-    throw new Error('Could not parse Brave results');
+      throw new Error('Could not extract results from Brave response');
+    } catch (parseError) {
+      throw new Error(`Parse error: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+    }
   } catch (error) {
     throw new Error(
       `Brave search failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -175,7 +199,6 @@ export async function browserSearch(
     if (results.length > 0) {
       return { data: results };
     }
-    // If no results, fall through to Brave
   } catch (error) {
     process.stderr.write(
       `DuckDuckGo search failed, falling back to Brave: ${error instanceof Error ? error.message : String(error)}\n`,

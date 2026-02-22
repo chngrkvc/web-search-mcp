@@ -2,7 +2,13 @@
   "permissions": {
     "allow": [
       "Bash(brew install:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(gh auth setup-git:*)",
+      "Bash(railway:*)",
+      "Bash(curl:*)",
+      "Bash(python3 -c:*)"
     ]
   }
 }
