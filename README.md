@@ -1,5 +1,7 @@
 # Web Search MCP
 
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/web-search-mcp)
+
 An [MCP](https://modelcontextprotocol.io/) server that provides eight tools: a **web search** powered by browser-based DuckDuckGo/Brave (via [Crawl4AI](https://github.com/unclecode/crawl4ai)), five Crawl4AI-powered tools (**web_fetch**, **web_screenshot**, **web_pdf**, **web_execute_js**, **web_crawl**), and two [Wayback Machine](https://web.archive.org/) tools (**web_snapshots**, **web_archive**).
 
 ## Architecture
