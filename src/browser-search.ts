@@ -9,7 +9,7 @@ type DuckDuckGoResponse = {
   Results?: Array<{ Text: string; FirstURL: string }>;
 };
 
-// DuckDuckGo Instant Answer API - no bot detection, direct HTTP
+// DuckDuckGo Instant Answer API - direct HTTP
 async function searchDuckDuckGoAPI(
   query: string,
   limit: number,
@@ -19,7 +19,7 @@ async function searchDuckDuckGoAPI(
   const response = await fetch(url, {
     headers: {
       'Accept': 'application/json',
-      'User-Agent': 'Mozilla/5.0 (compatible; WebSearchBot/1.0)',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     },
   });
 
@@ -39,7 +39,6 @@ async function searchDuckDuckGoAPI(
     if (results.length >= limit) break;
 
     if (topic.Text && topic.FirstURL) {
-      // Clean up the title - remove source in parentheses
       const title = topic.Text.replace(/\s*\([^)]*\)$/, '').trim();
 
       results.push({
@@ -50,7 +49,6 @@ async function searchDuckDuckGoAPI(
     }
   }
 
-  // Also add results from Results array if present
   if (data.Results) {
     for (const topic of data.Results) {
       if (results.length >= limit) break;
@@ -70,44 +68,13 @@ async function searchDuckDuckGoAPI(
   return results;
 }
 
-// Fallback: use Brave Search API
-async function searchBraveAPI(
-  query: string,
-  limit: number,
-): Promise<SearchResult[]> {
-  const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${limit}`;
-
-  const response = await fetch(url, {
-    headers: {
-      'Accept': 'application/json',
-      'X-Subscription-Token': '', // Brave API needs a token, but this might work for basic
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Brave API failed: ${response.status}`);
-  }
-
-  const data = await response.json() as { web?: { results?: Array<{ url: string; title: string; description: string }> } };
-
-  if (!data.web?.results) {
-    throw new Error('No results from Brave');
-  }
-
-  return data.web.results.slice(0, limit).map(r => ({
-    url: r.url,
-    title: r.title,
-    description: r.description || '',
-  }));
-}
-
 export async function browserSearch(
   query: string,
   limit?: number,
 ): Promise<{ data: SearchResult[] }> {
   const maxResults = limit ?? 10;
 
-  // Try DuckDuckGo API first
+  // Try DuckDuckGo API
   try {
     const results = await searchDuckDuckGoAPI(query, maxResults);
     if (results.length > 0) {
@@ -120,13 +87,6 @@ export async function browserSearch(
     );
   }
 
-  // Try Brave
-  try {
-    const results = await searchBraveAPI(query, maxResults);
-    return { data: results };
-  } catch (error) {
-    throw new Error(
-      `All search engines failed. Last error: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
+  // If DuckDuckGo returns 0 results (not error), still return empty array
+  throw new Error('No results found from DuckDuckGo');
 }
