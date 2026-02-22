@@ -8,32 +8,31 @@ export type SearchResult = {
 
 function parseDuckDuckGoHtml(html: string, limit: number): SearchResult[] {
   const results: SearchResult[] = [];
-  const snippetRegex = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
-  const linkRegex = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
 
-  let match;
+  // Try multiple regex patterns to find results
+  const patterns = [
+    // Pattern with snippet
+    /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/gi,
+    // Just the link
+    /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi,
+  ];
 
-  while ((match = snippetRegex.exec(html)) !== null && results.length < limit) {
-    let url = match[1] || '';
-    const title = match[2]?.replace(/<[^>]+>/g, '').trim() || '';
-    const description = match[3]?.replace(/<[^>]+>/g, '').trim() || '';
-
-    const uddgMatch = url.match(/uddg=([^&]+)/);
-    if (uddgMatch) url = decodeURIComponent(uddgMatch[1]);
-
-    if (url && title) results.push({ url, title, description });
-  }
-
-  if (results.length === 0) {
-    while ((match = linkRegex.exec(html)) !== null && results.length < limit) {
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(html)) !== null && results.length < limit) {
       let url = match[1] || '';
       const title = match[2]?.replace(/<[^>]+>/g, '').trim() || '';
+      const description = match[3]?.replace(/<[^>]+>/g, '').trim() || '';
 
+      // Extract actual URL from DuckDuckGo redirect
       const uddgMatch = url.match(/uddg=([^&]+)/);
       if (uddgMatch) url = decodeURIComponent(uddgMatch[1]);
 
-      if (url && title) results.push({ url, title, description: '' });
+      if (url && title) {
+        results.push({ url, title, description });
+      }
     }
+    if (results.length > 0) break;
   }
 
   return results;
@@ -41,46 +40,56 @@ function parseDuckDuckGoHtml(html: string, limit: number): SearchResult[] {
 
 function parseBraveHtml(html: string, limit: number): SearchResult[] {
   const results: SearchResult[] = [];
-  const regex = /<article[^>]*>[\s\S]*?<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:<p[^>]*>([\s\S]*?)<\/p>)?/gi;
 
-  let match;
-  while ((match = regex.exec(html)) !== null && results.length < limit) {
-    let url = match[1] || '';
-    const title = match[2]?.replace(/<[^>]+>/g, '').trim() || '';
-    const description = match[3]?.replace(/<[^>]+>/g, '').trim() || '';
+  const patterns = [
+    /<article[^>]*>[\s\S]*?<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:<p[^>]*>([\s\S]*?)<\/p>)?/gi,
+    /<div[^>]*data-testid="web-result"[^>]*>[\s\S]*?<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:<p[^>]*>([\s\S]*?)<\/p>)?/gi,
+  ];
 
-    if (url && !url.startsWith('http')) url = 'https://' + url;
-    if (url && title) results.push({ url, title, description });
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(html)) !== null && results.length < limit) {
+      let url = match[1] || '';
+      const title = match[2]?.replace(/<[^>]+>/g, '').trim() || '';
+      const description = match[3]?.replace(/<[^>]+>/g, '').trim() || '';
+
+      if (url && !url.startsWith('http')) url = 'https://' + url;
+      if (url && title) results.push({ url, title, description });
+    }
+    if (results.length > 0) break;
   }
 
   return results;
 }
 
 function extractHtml(result: unknown): string {
-  // Crawl4AI returns { content: [{ type, text }] }
-  // text can be a string (JSON) or an object
-  const content = result as { content?: { type: string; text: unknown }[] };
-  const textField = content?.content?.[0]?.text;
+  const response = result as { content?: { text: unknown }[] };
+  const textField = response?.content?.[0]?.text;
 
-  if (!textField) throw new Error('No response from Crawl4AI');
+  if (!textField) {
+    throw new Error('No response from Crawl4AI');
+  }
 
-  // If text is already an object (not a string)
-  if (typeof textField === 'object' && textField !== null) {
+  // Direct check for object with html property
+  if (typeof textField === 'object' && textField !== null && 'html' in textField) {
     const obj = textField as { html?: string };
     if (obj.html) return obj.html;
-    return JSON.stringify(textField);
   }
 
-  // If text is a string, try to parse as JSON to get html field
-  const text = String(textField);
-  try {
-    const parsed = JSON.parse(text);
-    if (parsed.html) return parsed.html;
-  } catch {
-    // text is already the HTML
+  // If string, try JSON parse
+  if (typeof textField === 'string') {
+    try {
+      const parsed = JSON.parse(textField);
+      if (parsed && typeof parsed === 'object' && 'html' in parsed) {
+        return (parsed as { html?: string }).html || '';
+      }
+    } catch {
+      // Not JSON, return as-is
+    }
+    return textField;
   }
 
-  return text;
+  return String(textField);
 }
 
 async function searchDuckDuckGo(query: string, limit: number): Promise<SearchResult[]> {
@@ -88,14 +97,21 @@ async function searchDuckDuckGo(query: string, limit: number): Promise<SearchRes
 
   const result = await callExecuteJsTool({
     url,
-    scripts: [`await new Promise(r => setTimeout(r, 2000)); return document.documentElement.outerHTML;`],
+    scripts: [`await new Promise(r => setTimeout(r, 2500)); return document.documentElement.outerHTML;`],
   });
 
   const html = extractHtml(result);
+
+  // Check if we got a valid page or a bot detection page
+  if (html.length < 1000) {
+    process.stderr.write(`DDG response too short: ${html.substring(0, 500)}\n`);
+    throw new Error('DuckDuckGo returned a short/empty response - possibly bot detection');
+  }
+
   const results = parseDuckDuckGoHtml(html, limit);
+  process.stderr.write(`DDG: got ${results.length} results from ${html.length} bytes\n`);
 
   if (results.length === 0) {
-    process.stderr.write(`DDG HTML sample (first 1000 chars): ${html.substring(0, 1000)}\n`);
     throw new Error('No results parsed from DuckDuckGo HTML');
   }
 
@@ -107,14 +123,20 @@ async function searchBrave(query: string, limit: number): Promise<SearchResult[]
 
   const result = await callExecuteJsTool({
     url,
-    scripts: [`await new Promise(r => setTimeout(r, 3000)); return document.documentElement.outerHTML;`],
+    scripts: [`await new Promise(r => setTimeout(r, 3500)); return document.documentElement.outerHTML;`],
   });
 
   const html = extractHtml(result);
+
+  if (html.length < 1000) {
+    process.stderr.write(`Brave response too short: ${html.substring(0, 500)}\n`);
+    throw new Error('Brave returned a short/empty response');
+  }
+
   const results = parseBraveHtml(html, limit);
+  process.stderr.write(`Brave: got ${results.length} results from ${html.length} bytes\n`);
 
   if (results.length === 0) {
-    process.stderr.write(`Brave HTML sample (first 1000 chars): ${html.substring(0, 1000)}\n`);
     throw new Error('No results parsed from Brave HTML');
   }
 
@@ -132,7 +154,7 @@ export async function browserSearch(
     if (results.length > 0) return { data: results };
   } catch (error) {
     process.stderr.write(
-      `DuckDuckGo failed, trying Brave: ${error instanceof Error ? error.message : String(error)}\n`,
+      `DuckDuckGo failed: ${error instanceof Error ? error.message : String(error)}\n`,
     );
   }
 
