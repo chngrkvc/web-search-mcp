@@ -86,7 +86,7 @@ async function searchBingScrape(
     const title = match[1];
     const url = match[2];
 
-    if (url && !url.includes('bing') && !url.microsoft.com) {
+    if (url && !url.includes('bing') && !url.includes('microsoft.com')) {
       results.push({
         url,
         title,
