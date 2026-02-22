@@ -1,0 +1,417 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import express, { Request, Response } from 'express';
+import { z } from 'zod';
+
+import { Config } from './config.js';
+import {
+  callCrawlTool,
+  callExecuteJsTool,
+  callMdTool,
+  callPdfTool,
+  callScreenshotTool,
+} from './crawl4ai.js';
+import { browserSearch } from './browser-search.js';
+import { getArchivedPage, getSnapshots } from './wayback.js';
+
+// Helper function to log to stderr
+const log = (...args: any[]) => {
+  process.stderr.write(
+    args
+      .map(arg => (typeof arg === 'string' ? arg : JSON.stringify(arg)))
+      .join(' ') + '\n',
+  );
+};
+
+// Function to create and configure a new server instance for each request
+function createServer(): McpServer {
+  const server = new McpServer(
+    {
+      name: 'web_search',
+      version: '1.0.0',
+    },
+    { capabilities: { logging: {} } },
+  );
+
+  // Web search tool — browser-based search via DuckDuckGo/Brave
+  server.tool(
+    'web_search',
+    'Search the web via browser-based DuckDuckGo/Brave and return results.',
+    {
+      query: z.string().min(1).describe('The search query'),
+      limit: z
+        .number()
+        .min(1)
+        .max(20)
+        .optional()
+        .describe('Max number of results (default: 10)'),
+    },
+    async ({ query, limit }) => {
+      try {
+        const results = await browserSearch(query, limit ?? 10);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(results.data, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Search error: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // web_fetch tool — proxy to Crawl4AI md tool
+  server.tool(
+    'web_fetch',
+    'Fetch a URL and return its content as clean markdown via Crawl4AI',
+    {
+      url: z.string().url().describe('URL to fetch'),
+      f: z
+        .enum(['raw', 'fit', 'bm25', 'llm'])
+        .optional()
+        .describe('Content-filter strategy (default: fit)'),
+      q: z.string().optional().describe('Query string for BM25/LLM filters'),
+    },
+    async args => {
+      try {
+        const result = await callMdTool(args);
+        return result as { content: { type: 'text'; text: string }[] };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Fetch error: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // web_screenshot tool — proxy to Crawl4AI screenshot tool
+  server.tool(
+    'web_screenshot',
+    'Capture a full-page PNG screenshot of a URL via Crawl4AI',
+    {
+      url: z.string().url().describe('URL to screenshot'),
+      screenshot_wait_for: z
+        .number()
+        .optional()
+        .describe('Seconds to wait before capture (default: 2)'),
+    },
+    async args => {
+      try {
+        const result = await callScreenshotTool(args);
+        return result as { content: { type: 'text'; text: string }[] };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Screenshot error: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // web_pdf tool — proxy to Crawl4AI pdf tool
+  server.tool(
+    'web_pdf',
+    'Generate a PDF document of a URL via Crawl4AI',
+    {
+      url: z.string().url().describe('URL to convert to PDF'),
+    },
+    async args => {
+      try {
+        const result = await callPdfTool(args);
+        return result as { content: { type: 'text'; text: string }[] };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `PDF error: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // web_execute_js tool — proxy to Crawl4AI execute_js tool
+  server.tool(
+    'web_execute_js',
+    'Execute JavaScript snippets on a URL via Crawl4AI and return the crawl result',
+    {
+      url: z.string().url().describe('URL to execute scripts on'),
+      scripts: z
+        .array(z.string())
+        .min(1)
+        .describe('List of JavaScript snippets to execute in order'),
+    },
+    async args => {
+      try {
+        const result = await callExecuteJsTool(args);
+        return result as { content: { type: 'text'; text: string }[] };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Execute JS error: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // web_crawl tool — proxy to Crawl4AI MCP server
+  server.tool(
+    'web_crawl',
+    'Crawl one or more URLs and extract their content using Crawl4AI',
+    {
+      urls: z.array(z.string().url()).min(1).describe('List of URLs to crawl'),
+      browser_config: z
+        .record(z.unknown())
+        .optional()
+        .describe('Optional Crawl4AI browser configuration'),
+      crawler_config: z
+        .record(z.unknown())
+        .optional()
+        .describe('Optional Crawl4AI crawler configuration'),
+    },
+    async args => {
+      try {
+        const result = await callCrawlTool(args);
+        return result as { content: { type: 'text'; text: string }[] };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Crawl error: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // web_snapshots tool — Wayback Machine CDX API
+  server.tool(
+    'web_snapshots',
+    'List Wayback Machine snapshots for a URL',
+    {
+      url: z.string().describe('URL to check for snapshots'),
+      from: z.string().optional().describe('Start date in YYYYMMDD format'),
+      to: z.string().optional().describe('End date in YYYYMMDD format'),
+      limit: z
+        .number()
+        .optional()
+        .describe('Max number of snapshots to return (default: 100)'),
+      match_type: z
+        .enum(['exact', 'prefix', 'host', 'domain'])
+        .optional()
+        .describe('URL matching strategy (default: exact)'),
+      filter: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'CDX API filters (e.g. ["statuscode:200", "mimetype:text/html"])',
+        ),
+    },
+    async ({ url, from, to, limit, match_type, filter }) => {
+      try {
+        const snapshots = await getSnapshots({
+          url,
+          from,
+          to,
+          limit,
+          matchType: match_type,
+          filter,
+        });
+        if (snapshots.length === 0) {
+          return {
+            content: [
+              { type: 'text', text: `No snapshots found for URL: ${url}` },
+            ],
+          };
+        }
+        return {
+          content: [{ type: 'text', text: JSON.stringify(snapshots, null, 2) }],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Snapshots error: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // web_archive tool — Wayback Machine page retrieval
+  server.tool(
+    'web_archive',
+    'Retrieve an archived page from the Wayback Machine',
+    {
+      url: z.string().describe('URL of the page to retrieve'),
+      timestamp: z.string().describe('Timestamp in YYYYMMDDHHMMSS format'),
+      original: z
+        .boolean()
+        .optional()
+        .describe(
+          'Get original content without Wayback Machine banner (default: false)',
+        ),
+    },
+    async ({ url, timestamp, original }) => {
+      try {
+        const { waybackUrl, content } = await getArchivedPage({
+          url,
+          timestamp,
+          original,
+        });
+        const MAX_LENGTH = 50000;
+        const truncated = content.length > MAX_LENGTH;
+        const text = `Wayback URL: ${waybackUrl}\nContent length: ${content.length} characters\n\n${truncated ? content.substring(0, MAX_LENGTH) + '\n\n[Content truncated]' : content}`;
+        return { content: [{ type: 'text', text }] };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Archive error: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  return server;
+}
+
+// Log environment check
+log('Environment check:', {
+  crawl4aiUrl: Config.crawl4ai.url,
+});
+
+const app = express();
+app.use(express.json());
+
+// API key auth middleware — skips /health
+app.use((req: Request, res: Response, next) => {
+  if (req.path === '/health') return next();
+
+  const provided =
+    req.headers.authorization?.replace(/^Bearer\s+/i, '') ||
+    (req.query.api_key as string);
+
+  if (provided !== Config.apiKey) {
+    res.status(403).json({
+      error: 'forbidden',
+      error_description: 'Invalid or missing API key',
+    });
+    return;
+  }
+
+  next();
+});
+
+app.post('/mcp', async (req: Request, res: Response) => {
+  const server = createServer();
+  try {
+    const transport: StreamableHTTPServerTransport =
+      new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+      });
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+
+    res.on('close', () => {
+      log('Request closed');
+      transport.close();
+      server.close();
+    });
+  } catch (error) {
+    log('Error handling MCP request:', error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: '2.0',
+        error: {
+          code: -32603,
+          message: 'Internal server error',
+        },
+        id: null,
+      });
+    }
+  }
+});
+
+app.get('/health', (_req: Request, res: Response) => {
+  res.json({ status: 'ok' });
+});
+
+app.get('/mcp', async (_req: Request, res: Response) => {
+  res.writeHead(405).end(
+    JSON.stringify({
+      jsonrpc: '2.0',
+      error: {
+        code: -32000,
+        message: 'Method not allowed.',
+      },
+      id: null,
+    }),
+  );
+});
+
+app.delete('/mcp', async (req: Request, res: Response) => {
+  log('Received DELETE MCP request');
+  res.writeHead(405).end(
+    JSON.stringify({
+      jsonrpc: '2.0',
+      error: {
+        code: -32000,
+        message: 'Method not allowed.',
+      },
+      id: null,
+    }),
+  );
+});
+
+// Start the server
+const PORT = parseInt(process.env.PORT || '3000', 10);
+app.listen(PORT, () => {
+  log(`MCP Stateless Streamable HTTP Server listening on port ${PORT}`);
+});
+
+// Handle server shutdown
+process.on('SIGINT', async () => {
+  log('Shutting down server...');
+  process.exit(0);
+});
