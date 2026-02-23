@@ -2,7 +2,7 @@
 
 [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/web-search-mcp)
 
-An [MCP](https://modelcontextprotocol.io/) server that provides eight tools: a **web search** powered by browser-based DuckDuckGo/Brave (via [Crawl4AI](https://github.com/unclecode/crawl4ai)), five Crawl4AI-powered tools (**web_fetch**, **web_screenshot**, **web_pdf**, **web_execute_js**, **web_crawl**), and two [Wayback Machine](https://web.archive.org/) tools (**web_snapshots**, **web_archive**).
+An [MCP](https://modelcontextprotocol.io/) server that provides eight tools: a **web search** powered by [SearXNG](https://github.com/searxng/searxng), five [Crawl4AI](https://github.com/unclecode/crawl4ai)-powered tools (**web_fetch**, **web_screenshot**, **web_pdf**, **web_execute_js**, **web_crawl**), and two [Wayback Machine](https://web.archive.org/) tools (**web_snapshots**, **web_archive**).
 
 ## Architecture
 
@@ -16,15 +16,15 @@ graph LR
     Client -->|web_crawl| Server
     Client -->|web_snapshots| Server
     Client -->|web_archive| Server
+    Server --> SearXNG
+    SearXNG --> Redis
     Server --> Crawl4AI
-    Crawl4AI --> DuckDuckGo["DuckDuckGo HTML"]
-    Crawl4AI --> Brave["Brave Search<br/>(fallback)"]
     Server --> Wayback["Wayback Machine"]
 ```
 
-The `web_search` tool uses Crawl4AI's browser to search DuckDuckGo (primary) and Brave (fallback), avoiding bot detection. The Crawl4AI tools handle content extraction, screenshots, PDFs, JS execution, and multi-URL crawling. The Wayback Machine tools list and retrieve archived pages.
+The `web_search` tool queries SearXNG for search results. The Crawl4AI tools handle content extraction, screenshots, PDFs, JS execution, and multi-URL crawling. The Wayback Machine tools list and retrieve archived pages.
 
-The full stack deploys as **2 services**: Crawl4AI and this MCP server.
+The full stack deploys as **4 services**: Redis, SearXNG, Crawl4AI, and this MCP server.
 
 ## Tools
 
@@ -32,7 +32,7 @@ The server exposes eight MCP tools:
 
 ### `web_search`
 
-Browser-based web search via DuckDuckGo (with Brave fallback). Returns structured results.
+Lightweight web search via SearXNG. Returns structured results.
 
 | Parameter | Type              | Description                                  |
 | --------- | ----------------- | -------------------------------------------- |
@@ -210,10 +210,12 @@ claude mcp add web_search --scope user \
 
 ### Railway
 
-This project deploys as 2 services on Railway:
+This project deploys as 4 services on Railway:
 
-1. **Crawl4AI** - Browser automation service
-2. **MCP Server** - This web-search-mcp server
+1. **Redis** - Cache for SearXNG
+2. **SearXNG** - Meta search engine
+3. **Crawl4AI** - Browser automation service
+4. **MCP Server** - This web-search-mcp server
 
 #### Deploy Steps:
 
@@ -221,13 +223,22 @@ This project deploys as 2 services on Railway:
 
 2. **Create a new project** on [Railway](https://railway.app/)
 
-3. **Deploy Crawl4AI first:**
+3. **Deploy Redis:**
+   - Click "Add Service" → "Database" → "Redis"
+
+4. **Deploy SearXNG:**
+   - Click "Add Service" → "Image"
+   - Image: `searxng/searxng:latest`
+   - Add port: `8080`
+   - Set `SEARXNG_SECRET_KEY` and `SEARXNG_REDIS_URL` environment variables
+
+5. **Deploy Crawl4AI:**
    - Click "Add Service" → "Image"
    - Image: `unclecode/crawl4ai:latest`
    - Add port: `11235`
    - (Optional) Set `CRAWL4AI_API_TOKEN` environment variable
 
-4. **Deploy MCP Server:**
+6. **Deploy MCP Server:**
    - Click "Add Service" → "GitHub Repo"
    - Select your forked repository
    - Railway will auto-detect the Dockerfile

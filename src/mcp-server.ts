@@ -11,7 +11,7 @@ import {
   callPdfTool,
   callScreenshotTool,
 } from './crawl4ai.js';
-import { browserSearch } from './browser-search.js';
+import { searchSearXNG } from './searxng.js';
 import { getArchivedPage, getSnapshots } from './wayback.js';
 
 // Helper function to log to stderr
@@ -33,10 +33,10 @@ function createServer(): McpServer {
     { capabilities: { logging: {} } },
   );
 
-  // Web search tool — browser-based search via DuckDuckGo/Brave
+  // Web search tool — powered by SearXNG
   server.tool(
     'web_search',
-    'Search the web via browser-based DuckDuckGo/Brave and return results.',
+    'Search the web via SearXNG and return results.',
     {
       query: z.string().min(1).describe('The search query'),
       limit: z
@@ -48,7 +48,7 @@ function createServer(): McpServer {
     },
     async ({ query, limit }) => {
       try {
-        const results = await browserSearch(query, limit ?? 10);
+        const results = await searchSearXNG(query, { limit: limit ?? 10 });
         return {
           content: [
             {
@@ -318,6 +318,7 @@ function createServer(): McpServer {
 
 // Log environment check
 log('Environment check:', {
+  searxngUrl: Config.searxng.url,
   crawl4aiUrl: Config.crawl4ai.url,
 });
 
